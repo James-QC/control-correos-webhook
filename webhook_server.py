@@ -480,6 +480,75 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
     data    = session["data"]
     now     = datetime.now(LIMA_TZ)
 
+    # ── Comandos de control globales (cualquier paso) ─────────────────────────
+    text_ctrl = text.strip().lower()
+
+    # REINICIAR
+    if text_ctrl in ["reiniciar", "inicio", "reset", "empezar", "comenzar", "volver", "menu", "menú", "cancelar"]:
+        reset_session(sender)
+        session2 = get_session(sender)
+        session2["step"] = "esperar_nombre"
+        await send_wa_message(sender,
+            "Conversación reiniciada 🔄\n\n"
+            "¡Bienvenido/a nuevamente! 👋\n\n"
+            "Soy *ASFIN*, el asistente virtual de *ASFIN Consultoría*.\n\n"
+            "Ofrecemos servicios especializados en:\n"
+            "1️⃣ Consultoría empresarial\n"
+            "2️⃣ Gestión financiera\n"
+            "3️⃣ Asesoría en contrataciones y arbitraje\n\n"
+            "Para comenzar, ¿cuál es su nombre completo?"
+        )
+        return
+
+    # CORREGIR — volver un paso atrás
+    if text_ctrl in ["corregir", "volver atrás", "volver atras", "atrás", "atras", "cambiar", "modificar"]:
+        slots_txt = "\n".join([f"{i+1}️⃣ {s['label']}" for i, s in enumerate(data.get("slots", []))]) if data.get("slots") else ""
+        pasos_anteriores = {
+            "esperar_empresa":     ("esperar_nombre",     "¿Cuál es su nombre completo?"),
+            "esperar_servicio":    ("esperar_empresa",    "¿Representa a alguna empresa u organización?\n_Si es personal, escriba *personal*._"),
+            "esperar_descripcion": ("esperar_servicio",   "¿Qué servicio le interesa?\n\n1️⃣ Consultoría empresarial\n2️⃣ Gestión financiera\n3️⃣ Asesoría en contrataciones y arbitraje\n\n_Responda con 1, 2 o 3_"),
+            "esperar_reunion":     ("esperar_descripcion","Cuéntenos nuevamente sobre su proyecto o necesidad:"),
+            "esperar_dia":         ("esperar_reunion",    "¿Desea agendar una reunión (S/ 100.00) o solo recibir cotización?\n\n*sí* — Reunión\n*no* — Solo cotización"),
+            "esperar_horario":     ("esperar_dia",        "¿Qué día le resultaría conveniente?\n_Ejemplo: lunes, viernes 20, mañana_"),
+            "esperar_yape":        ("esperar_horario",    f"Elija nuevamente el horario:\n\n{slots_txt}" if slots_txt else "¿Qué día le resultaría conveniente?"),
+        }
+        if step in pasos_anteriores:
+            paso_ant, pregunta = pasos_anteriores[step]
+            session["step"] = paso_ant
+            await send_wa_message(sender, f"✏️ Entendido, volvamos atrás.\n\n{pregunta}")
+            return
+        # Paso no retrocedible → reiniciar
+        reset_session(sender)
+        get_session(sender)["step"] = "esperar_nombre"
+        await send_wa_message(sender, "✏️ Reiniciando desde el principio.\n\n¿Cuál es su nombre completo?")
+        return
+
+    # AYUDA
+    if text_ctrl in ["ayuda", "help", "?", "info", "estado"]:
+        pasos_labels = {
+            "inicio": "inicio",
+            "esperar_nombre": "ingreso de nombre",
+            "esperar_empresa": "ingreso de empresa",
+            "esperar_servicio": "selección de servicio",
+            "esperar_descripcion": "descripción del proyecto",
+            "esperar_reunion": "decisión de reunión",
+            "esperar_dia": "selección de día",
+            "esperar_horario": "selección de horario",
+            "esperar_yape": "envío de comprobante",
+            "esperando_validacion": "validación de pago (en proceso)",
+            "completado": "completado ✅",
+        }
+        await send_wa_message(sender,
+            f"ℹ️ *ASFIN — Ayuda*\n\n"
+            f"📍 Paso actual: *{pasos_labels.get(step, step)}*\n\n"
+            f"Comandos disponibles:\n"
+            f"• *reiniciar* — Empezar desde el principio\n"
+            f"• *corregir* — Volver al paso anterior\n"
+            f"• *ayuda* — Ver esta pantalla\n\n"
+            f"Para continuar, responda la pregunta actual."
+        )
+        return
+
     # ── inicio ────────────────────────────────────────────────────────────────
     if step == "inicio":
         session["step"] = "esperar_nombre"
