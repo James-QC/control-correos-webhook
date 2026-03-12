@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*.pdf
+generate_pdf.py
+fonts/
+.env
+*.log
