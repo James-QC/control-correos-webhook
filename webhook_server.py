@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-WhatsApp Webhook Server — Control Correos James + Bot ASFIN
+WhatsApp Webhook Server — Control Correos James + Bot ASFIN v4
 - Números conocidos (James personal): comandos de gestión
-- Números desconocidos: flujo de captación ASFIN con Calendar
+- Números desconocidos: flujo de captación ASFIN con CRM + Calendar
 """
 
 import asyncio
@@ -47,24 +47,114 @@ GMAIL_APP_PASS    = os.getenv("GMAIL_APP_PASS",    "")
 # Google Calendar Service Account
 GCAL_CLIENT_EMAIL = os.getenv("GCAL_CLIENT_EMAIL", "asfin-calendar-bot@asfin-bot.iam.gserviceaccount.com")
 GCAL_PRIVATE_KEY  = os.getenv("GCAL_PRIVATE_KEY",  "").replace("\\n", "\n")
-GCAL_CALENDAR_ID  = os.getenv("GCAL_CALENDAR_ID",  "pabel.conga@gmail.com")  # calendario principal de James
+GCAL_CALENDAR_ID  = os.getenv("GCAL_CALENDAR_ID",  "pabel.conga@gmail.com")
 
 LIMA_TZ = timezone(timedelta(hours=-5))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("wa-webhook")
 
-app = FastAPI(title="WA Webhook — Control Correos James + ASFIN")
+app = FastAPI(title="WA Webhook — Control Correos James + ASFIN v4")
 
-# ─── Sesiones clientes externos ───────────────────────────────────────────────
+# ─── CRM en memoria ───────────────────────────────────────────────────────────
+# Estados de conversación:
+#   "nuevo"               → primera vez que escribe
+#   "conversacion_activa" → conversación en curso
+#   "incompleto"          → dejó conversación a medias
+#   "reunion_agendada"    → ya agendó reunión
+#   "reunion_realizada"   → ya tuvo reunión (cliente recurrente)
+
 CLIENT_SESSIONS: dict[str, dict] = {}
+# Estructura de sesión:
+# {
+#   "step": str,
+#   "data": {
+#     "nombre": str,
+#     "telefono": str,
+#     "empresa": str,
+#     "servicio": str,
+#     "descripcion": str,
+#     "tipo_consulta": str,
+#     "estado_conversacion": str,  # nuevo/incompleto/reunion_agendada/reunion_realizada
+#     "reunion_agendada": bool,
+#     "reunion_realizada": bool,
+#     "fecha_reunion": str,
+#     "dia_str": str,
+#     "target_date": str,
+#     "slots": list,
+#     "horario_label": str,
+#     "slot_start": str,
+#     "slot_end": str,
+#     "media_id": str,
+#     "sender_phone": str,
+#   }
+# }
+
 PENDING_CONFIRM: dict[str, dict] = {}  # código 4 dígitos → datos cliente
 
 SERVICIOS = {
-    "1": "Consultoría empresarial",
-    "2": "Gestión financiera",
-    "3": "Asesoría en contrataciones y arbitraje",
+    "1": "Consultoría estratégica para empresas",
+    "2": "Contrataciones públicas y controversias de obra",
+    "3": "Gestión financiera y control empresarial",
+    "4": "Sistemas de control, ERP y transformación digital",
 }
+
+SERVICIOS_DESC = {
+    "1": (
+        "🧠 *CONSULTORÍA ESTRATÉGICA PARA EMPRESAS*\n\n"
+        "Apoyamos a empresas del sector construcción a mejorar su organización y crecimiento.\n\n"
+        "Podemos ayudar en:\n"
+        "• Reorganización empresarial\n"
+        "• Optimización de procesos operativos\n"
+        "• Implementación de sistemas de control interno\n"
+        "• Diseño de estructura administrativa y financiera\n"
+        "• Implementación de ERP para gestión empresarial\n\n"
+        "Cuéntenos brevemente su situación o el problema que desea resolver."
+    ),
+    "2": (
+        "⚖️ *CONTRATACIONES PÚBLICAS Y CONTROVERSIAS DE OBRA*\n\n"
+        "Brindamos asesoría especializada en contratos con el Estado y resolución de controversias en obras públicas.\n\n"
+        "Podemos ayudar en:\n"
+        "• Aplicación de la Ley de Contrataciones del Estado\n"
+        "• Ampliaciones de plazo\n"
+        "• Adicionales de obra\n"
+        "• Defensa frente a penalidades\n"
+        "• Resolución de contrato\n"
+        "• Controversias contractuales\n"
+        "• Procesos arbitrales y Juntas de Resolución de Disputas\n\n"
+        "Cuéntenos brevemente su caso o la situación que desea resolver."
+    ),
+    "3": (
+        "💰 *GESTIÓN FINANCIERA Y CONTROL EMPRESARIAL*\n\n"
+        "Ayudamos a empresas constructoras a organizar su gestión financiera y mejorar el control de sus proyectos.\n\n"
+        "Podemos apoyar en:\n"
+        "• Organización del área de tesorería\n"
+        "• Control del flujo de caja por obra\n"
+        "• Financiamiento de proyectos\n"
+        "• Estructuración financiera empresarial\n"
+        "• Diseño de sistemas de control financiero\n\n"
+        "Cuéntenos brevemente su situación o el problema que desea resolver."
+    ),
+    "4": (
+        "⚙️ *SISTEMAS DE CONTROL Y TRANSFORMACIÓN DIGITAL*\n\n"
+        "Ayudamos a empresas del sector construcción a implementar sistemas tecnológicos que mejoren el control de sus operaciones.\n\n"
+        "Podemos apoyar en:\n"
+        "• Implementación de ERP para empresas constructoras\n"
+        "• Sistemas de control interno digital\n"
+        "• Herramientas de gestión de proyectos\n"
+        "• Automatización de procesos empresariales\n"
+        "• Aplicación de inteligencia artificial en gestión empresarial\n\n"
+        "Cuéntenos brevemente su proyecto o la necesidad que desea resolver."
+    ),
+}
+
+MENU_SERVICIOS = (
+    "1️⃣ Consultoría estratégica para empresas\n"
+    "2️⃣ Contrataciones públicas y controversias de obra\n"
+    "3️⃣ Gestión financiera y control empresarial\n"
+    "4️⃣ Sistemas de control, ERP y transformación digital\n\n"
+    "Responda con el número de la opción que mejor describa su consulta (1, 2, 3 o 4)."
+)
 
 # ─── Google Calendar helpers ──────────────────────────────────────────────────
 
@@ -160,21 +250,24 @@ def is_blocked_slot(dt: datetime) -> bool:
     """
     Devuelve True si la fecha/hora está en bloque de no atención:
     - Viernes desde las 18:00 hasta Sábado 18:00
+    - Domingo completo
     """
-    weekday = dt.weekday()  # 4=viernes, 5=sábado
+    weekday = dt.weekday()  # 4=viernes, 5=sábado, 6=domingo
     hour = dt.hour
     if weekday == 4 and hour >= 18:  # viernes 6pm en adelante
         return True
-    if weekday == 5 and hour < 18:   # sábado hasta 6pm
+    if weekday == 5 and hour < 18:   # sábado antes de 6pm → dentro del bloqueo viernes-sábado
         return True
-    return True if weekday == 6 else False  # domingo bloqueado también
+    if weekday == 6:                  # domingo completo
+        return True
+    return False
 
 
 def get_available_slots(target_date: datetime, service) -> list[dict]:
     """
     Retorna hasta 3 horarios disponibles en target_date.
     Bloques permitidos: 8:00-13:00 y 16:00-20:00 (Lima)
-    Slots de 1 hora cada uno.
+    Slots de 30 min cada uno (reunión consultoría = 30 min según DOCX).
     """
     candidate_hours = [8, 9, 10, 11, 12, 16, 17, 18, 19]
     available = []
@@ -189,12 +282,12 @@ def get_available_slots(target_date: datetime, service) -> list[dict]:
         if is_blocked_slot(slot_start):
             continue
 
-        # Verificar que no sea en el pasado
+        # Verificar que no sea en el pasado (mínimo 2h de anticipación)
         now = datetime.now(LIMA_TZ)
         if slot_start <= now + timedelta(hours=2):
             continue
 
-        slot_end = slot_start + timedelta(hours=1)
+        slot_end = slot_start + timedelta(minutes=30)
 
         # Consultar disponibilidad en Calendar
         if service:
@@ -236,7 +329,7 @@ async def create_calendar_event(data: dict, slot_start: datetime) -> tuple[str, 
         if not service:
             return None, ""
 
-        slot_end = slot_start + timedelta(hours=1)
+        slot_end = slot_start + timedelta(minutes=30)
         nombre   = data.get("nombre", "Cliente")
         servicio = data.get("servicio", "Consultoría")
         empresa  = data.get("empresa", "") or "Personal"
@@ -244,7 +337,7 @@ async def create_calendar_event(data: dict, slot_start: datetime) -> tuple[str, 
         sender   = data.get("sender_phone", "")
 
         event_body = {
-            "summary": f"Reunión ASFIN — {nombre} ({servicio})",
+            "summary": f"Reunión ASFIN — {nombre} ({servicio[:30]})",
             "description": (
                 f"Cliente: {nombre}\n"
                 f"Empresa: {empresa}\n"
@@ -252,7 +345,7 @@ async def create_calendar_event(data: dict, slot_start: datetime) -> tuple[str, 
                 f"Descripción: {desc}\n"
                 f"WhatsApp: +{sender}\n"
                 f"Pago: S/ 100.00 confirmado\n\n"
-                f"Generado automáticamente por Bot ASFIN"
+                f"Generado automáticamente por Bot ASFIN v4"
             ),
             "start": {
                 "dateTime": slot_start.isoformat(),
@@ -462,17 +555,72 @@ async def update_row_status(sheet_row: int, estado: str, obs_extra: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FLUJO ASFIN — Clientes externos
+# CRM HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_session(sender: str) -> dict:
     if sender not in CLIENT_SESSIONS:
-        CLIENT_SESSIONS[sender] = {"step": "inicio", "data": {}}
+        CLIENT_SESSIONS[sender] = {
+            "step": "inicio",
+            "data": {
+                "nombre": "",
+                "telefono": sender,
+                "empresa": "",
+                "servicio": "",
+                "descripcion": "",
+                "tipo_consulta": "",
+                "estado_conversacion": "nuevo",
+                "reunion_agendada": False,
+                "reunion_realizada": False,
+                "fecha_reunion": "",
+            }
+        }
     return CLIENT_SESSIONS[sender]
 
 def reset_session(sender: str):
-    CLIENT_SESSIONS.pop(sender, None)
+    """Reinicia completamente la sesión pero preserva historial CRM."""
+    old_data = CLIENT_SESSIONS.get(sender, {}).get("data", {})
+    # Preservar datos CRM de historial
+    crm = {
+        "nombre": old_data.get("nombre", ""),
+        "telefono": sender,
+        "empresa": old_data.get("empresa", ""),
+        "estado_conversacion": old_data.get("estado_conversacion", "nuevo"),
+        "reunion_agendada": old_data.get("reunion_agendada", False),
+        "reunion_realizada": old_data.get("reunion_realizada", False),
+        "fecha_reunion": old_data.get("fecha_reunion", ""),
+        # Limpiar datos de la conversación actual
+        "servicio": "",
+        "descripcion": "",
+        "tipo_consulta": "",
+        "dia_str": "",
+        "target_date": "",
+        "slots": [],
+        "horario_label": "",
+        "slot_start": "",
+        "slot_end": "",
+    }
+    CLIENT_SESSIONS[sender] = {"step": "inicio", "data": crm}
 
+def get_client_estado(sender: str) -> str:
+    """Retorna el estado CRM del cliente."""
+    session = CLIENT_SESSIONS.get(sender)
+    if not session:
+        return "nuevo"
+    data = session.get("data", {})
+    return data.get("estado_conversacion", "nuevo")
+
+def is_known_client(sender: str) -> bool:
+    """True si el número ya está registrado en el CRM con nombre."""
+    session = CLIENT_SESSIONS.get(sender)
+    if not session:
+        return False
+    return bool(session.get("data", {}).get("nombre", ""))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FLUJO ASFIN — Clientes externos
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = "") -> None:
     session = get_session(sender)
@@ -485,19 +633,28 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
 
     # REINICIAR
     if text_ctrl in ["reiniciar", "inicio", "reset", "empezar", "comenzar", "volver", "menu", "menú", "cancelar"]:
+        nombre_prev = data.get("nombre", "")
         reset_session(sender)
         session2 = get_session(sender)
-        session2["step"] = "esperar_nombre"
-        await send_wa_message(sender,
-            "Conversación reiniciada 🔄\n\n"
-            "¡Bienvenido/a nuevamente! 👋\n\n"
-            "Soy *ASFIN*, el asistente virtual de *ASFIN Consultoría*.\n\n"
-            "Ofrecemos servicios especializados en:\n"
-            "1️⃣ Consultoría empresarial\n"
-            "2️⃣ Gestión financiera\n"
-            "3️⃣ Asesoría en contrataciones y arbitraje\n\n"
-            "Para comenzar, ¿cuál es su nombre completo?"
-        )
+        session2["step"] = "esperar_nombre" if not nombre_prev else "menu_recurrente"
+        if nombre_prev:
+            session2["data"]["nombre"] = nombre_prev
+            await send_wa_message(sender,
+                f"Conversación reiniciada 🔄\n\n"
+                f"Hola {nombre_prev} 👋\n\n"
+                f"¿En qué podemos ayudarle hoy?\n\n"
+                f"1️⃣ Realizar una nueva consulta\n"
+                f"2️⃣ Continuar con una consulta anterior\n"
+                f"3️⃣ Agendar una reunión de consultoría"
+            )
+        else:
+            session2["step"] = "esperar_nombre"
+            await send_wa_message(sender,
+                "Conversación reiniciada 🔄\n\n"
+                "¡Bienvenido/a nuevamente! 👋\n\n"
+                "Soy *ASFIN IA*, el asistente virtual de *ASFIN SAC*.\n\n"
+                "Para comenzar, ¿cuál es su nombre completo?"
+            )
         return
 
     # CORREGIR — volver un paso atrás
@@ -506,9 +663,9 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
         pasos_anteriores = {
             "esperar_empresa":     ("esperar_nombre",     "¿Cuál es su nombre completo?"),
             "esperar_servicio":    ("esperar_empresa",    "¿Representa a alguna empresa u organización?\n_Si es personal, escriba *personal*._"),
-            "esperar_descripcion": ("esperar_servicio",   "¿Qué servicio le interesa?\n\n1️⃣ Consultoría empresarial\n2️⃣ Gestión financiera\n3️⃣ Asesoría en contrataciones y arbitraje\n\n_Responda con 1, 2 o 3_"),
+            "esperar_descripcion": ("esperar_servicio",   f"¿Qué tipo de asesoría necesita?\n\n{MENU_SERVICIOS}"),
             "esperar_reunion":     ("esperar_descripcion","Cuéntenos nuevamente sobre su proyecto o necesidad:"),
-            "esperar_dia":         ("esperar_reunion",    "¿Desea agendar una reunión (S/ 100.00) o solo recibir cotización?\n\n*sí* — Reunión\n*no* — Solo cotización"),
+            "esperar_dia":         ("esperar_reunion",    "¿Desea agendar una reunión (S/ 100.00) o solo dejar su consulta?\n\n*sí* — Reunión\n*no* — Solo consulta"),
             "esperar_horario":     ("esperar_dia",        "¿Qué día le resultaría conveniente?\n_Ejemplo: lunes, viernes 20, mañana_"),
             "esperar_yape":        ("esperar_horario",    f"Elija nuevamente el horario:\n\n{slots_txt}" if slots_txt else "¿Qué día le resultaría conveniente?"),
         }
@@ -527,6 +684,7 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
     if text_ctrl in ["ayuda", "help", "?", "info", "estado"]:
         pasos_labels = {
             "inicio": "inicio",
+            "menu_recurrente": "menú de cliente recurrente",
             "esperar_nombre": "ingreso de nombre",
             "esperar_empresa": "ingreso de empresa",
             "esperar_servicio": "selección de servicio",
@@ -549,26 +707,246 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
         )
         return
 
-    # ── inicio ────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # LÓGICA POR ESTADO CRM — Determina el flujo correcto al inicio
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # ── inicio — determinar estado CRM ───────────────────────────────────────
     if step == "inicio":
-        session["step"] = "esperar_nombre"
+        estado_crm = get_client_estado(sender)
+        nombre = data.get("nombre", "")
+
+        # ESTADO 1: Primera vez que escribe
+        if not nombre or estado_crm == "nuevo":
+            session["step"] = "esperar_nombre"
+            await send_wa_message(sender,
+                "¡Bienvenido/a! 👋\n\n"
+                "Soy *ASFIN IA*, el asistente virtual de *ASFIN SAC*.\n\n"
+                "Somos una firma especializada en consultoría estratégica para empresas del sector construcción.\n\n"
+                "Ayudamos a empresas y profesionales a resolver problemas en:\n"
+                "• Organización y crecimiento empresarial\n"
+                "• Contrataciones públicas y controversias de obra\n"
+                "• Gestión financiera de proyectos\n"
+                "• Sistemas de control y transformación digital\n\n"
+                "Para poder atenderle mejor,\n\n"
+                "¿Cuál es su nombre completo?"
+            )
+            return
+
+        # ESTADO 3: Conversación incompleta (tiene nombre pero no terminó el flujo)
+        if estado_crm == "incompleto":
+            step_pendiente = session.get("step_guardado", "esperar_servicio")
+            session["step"] = step_pendiente
+            await send_wa_message(sender,
+                f"Hola {nombre} 👋\n\n"
+                f"Quedamos pendientes de conocer el tipo de asesoría que necesita.\n\n"
+                f"Indíquenos qué tipo de consulta desea realizar:\n\n"
+                f"{MENU_SERVICIOS}"
+            )
+            return
+
+        # ESTADO 4: Ya agendó reunión
+        if estado_crm == "reunion_agendada":
+            fecha_r = data.get("fecha_reunion", "próximamente")
+            session["step"] = "menu_reunion_agendada"
+            await send_wa_message(sender,
+                f"Hola {nombre} 👋\n\n"
+                f"Su reunión de consultoría ya se encuentra registrada.\n"
+                f"📅 Fecha agendada: *{fecha_r}*\n\n"
+                f"Si necesita algo adicional, podemos ayudarle con:\n\n"
+                f"1️⃣ Confirmar detalles de la reunión\n"
+                f"2️⃣ Cambiar el horario de la reunión\n"
+                f"3️⃣ Realizar una nueva consulta"
+            )
+            return
+
+        # ESTADO 5: Ya tuvo reunión (cliente recurrente con historial)
+        if estado_crm == "reunion_realizada":
+            session["step"] = "menu_recurrente_con_historial"
+            await send_wa_message(sender,
+                f"Hola {nombre} 👋\n\n"
+                f"Nos alegra volver a saludarle.\n\n"
+                f"¿En qué podemos ayudarle hoy?\n\n"
+                f"1️⃣ Realizar una nueva consulta\n"
+                f"2️⃣ Solicitar seguimiento de un caso\n"
+                f"3️⃣ Agendar una nueva reunión de consultoría"
+            )
+            return
+
+        # ESTADO 2: Cliente que ya escribió antes (tiene nombre, conversación activa)
+        session["step"] = "menu_recurrente"
         await send_wa_message(sender,
-            "¡Bienvenido/a! 👋\n\n"
-            "Soy *ASFIN*, el asistente virtual de *ASFIN Consultoría*.\n\n"
-            "Ofrecemos servicios especializados en:\n"
-            "1️⃣ Consultoría empresarial\n"
-            "2️⃣ Gestión financiera\n"
-            "3️⃣ Asesoría en contrataciones y arbitraje\n\n"
-            "Para comenzar, ¿cuál es su nombre completo?"
+            f"Hola nuevamente, *{nombre}* 👋\n\n"
+            f"Soy *ASFIN IA*, el asistente virtual de *ASFIN SAC*.\n\n"
+            f"¿En qué podemos ayudarle hoy?\n\n"
+            f"1️⃣ Realizar una nueva consulta\n"
+            f"2️⃣ Continuar con una consulta anterior\n"
+            f"3️⃣ Agendar una reunión de consultoría"
         )
         return
 
+    # ── menu_recurrente — cliente conocido vuelve ────────────────────────────
+    if step == "menu_recurrente":
+        opcion = text.strip()
+        if opcion == "1":
+            # Nueva consulta → ir a selección de servicio
+            session["step"] = "esperar_servicio"
+            data["servicio"] = ""
+            data["descripcion"] = ""
+            nombre = data.get("nombre", "")
+            await send_wa_message(sender,
+                f"Perfecto, {nombre} 😊\n\n"
+                f"Para orientarle mejor, indíquenos qué tipo de asesoría necesita:\n\n"
+                f"{MENU_SERVICIOS}"
+            )
+            return
+        elif opcion == "2":
+            # Continuar consulta anterior
+            if data.get("descripcion"):
+                session["step"] = "esperar_reunion"
+                await send_wa_message(sender,
+                    f"Continuamos con su consulta anterior:\n\n"
+                    f"📋 *Servicio:* {data.get('servicio', '?')}\n"
+                    f"📝 *Descripción:* {data.get('descripcion', '?')[:100]}\n\n"
+                    f"¿Le gustaría agendar una *reunión con nuestro consultor* para evaluar su caso?\n\n"
+                    f"✅ *Sí* — Agendamos una reunión (S/ 100.00 soles)\n"
+                    f"📋 *No* — Solo dejar la consulta\n\n"
+                    f"_Responda *sí* o *no*_"
+                )
+            else:
+                session["step"] = "esperar_servicio"
+                await send_wa_message(sender,
+                    f"Indíquenos el tipo de asesoría que necesita:\n\n{MENU_SERVICIOS}"
+                )
+            return
+        elif opcion == "3":
+            # Agendar reunión directamente
+            session["step"] = "esperar_dia"
+            await send_wa_message(sender,
+                f"¡Excelente! 📅\n\n"
+                f"La reunión tiene un costo de *S/ 100.00 soles* (pago previo).\n\n"
+                f"¿Qué día le resultaría conveniente?\n"
+                f"_Indíquenos un día. Ejemplos: *lunes*, *viernes 20*, *20 de marzo*_\n\n"
+                f"📌 Horarios de atención:\n"
+                f"• Lunes a viernes: 8:00 AM – 1:00 PM y 4:00 PM – 8:00 PM\n"
+                f"• Sábados: 8:00 AM – 6:00 PM\n"
+                f"• Domingos y viernes desde 6:00 PM: no disponible"
+            )
+            return
+        else:
+            await send_wa_message(sender,
+                f"Por favor responda con *1*, *2* o *3*:\n\n"
+                f"1️⃣ Nueva consulta\n"
+                f"2️⃣ Continuar consulta anterior\n"
+                f"3️⃣ Agendar reunión"
+            )
+            return
+
+    # ── menu_reunion_agendada ────────────────────────────────────────────────
+    if step == "menu_reunion_agendada":
+        opcion = text.strip()
+        nombre = data.get("nombre", "")
+        if opcion == "1":
+            # Confirmar detalles
+            dia = data.get("dia_str", data.get("fecha_reunion", "?"))
+            horario = data.get("horario_label", "?")
+            servicio = data.get("servicio", "?")
+            await send_wa_message(sender,
+                f"📋 *Detalles de su reunión:*\n\n"
+                f"👤 *Nombre:* {nombre}\n"
+                f"📅 *Fecha:* {dia}\n"
+                f"⏰ *Hora:* {horario}\n"
+                f"📋 *Servicio:* {servicio}\n\n"
+                f"Si necesita más información, escríbanos.\n"
+                f"🏢 *ASFIN SAC*"
+            )
+            return
+        elif opcion == "2":
+            # Cambiar horario → reiniciar flujo de fecha
+            session["step"] = "esperar_dia"
+            await send_wa_message(sender,
+                f"Entendido, {nombre}. Busquemos otro horario disponible.\n\n"
+                f"¿Qué día le resultaría conveniente?\n"
+                f"_Ejemplos: *lunes*, *viernes 20*, *mañana*_"
+            )
+            return
+        elif opcion == "3":
+            # Nueva consulta
+            session["step"] = "esperar_servicio"
+            data["servicio"] = ""
+            data["descripcion"] = ""
+            await send_wa_message(sender,
+                f"Perfecto. Indíquenos qué tipo de asesoría necesita:\n\n{MENU_SERVICIOS}"
+            )
+            return
+        else:
+            await send_wa_message(sender,
+                "Por favor responda con *1*, *2* o *3*:\n\n"
+                "1️⃣ Confirmar detalles de la reunión\n"
+                "2️⃣ Cambiar el horario\n"
+                "3️⃣ Nueva consulta"
+            )
+            return
+
+    # ── menu_recurrente_con_historial — ya tuvo reunión ──────────────────────
+    if step == "menu_recurrente_con_historial":
+        opcion = text.strip()
+        nombre = data.get("nombre", "")
+        if opcion == "1":
+            # Nueva consulta
+            session["step"] = "esperar_servicio"
+            data["servicio"] = ""
+            data["descripcion"] = ""
+            await send_wa_message(sender,
+                f"Con gusto, {nombre} 😊\n\n"
+                f"¿Qué tipo de asesoría necesita en esta ocasión?\n\n"
+                f"{MENU_SERVICIOS}"
+            )
+            return
+        elif opcion == "2":
+            # Seguimiento de caso
+            session["step"] = "esperar_descripcion"
+            data["servicio"] = "Seguimiento de caso"
+            await send_wa_message(sender,
+                f"Entendido. Por favor cuéntenos sobre el caso que desea hacer seguimiento:\n\n"
+                f"_Indíquenos el tema o proyecto específico._"
+            )
+            return
+        elif opcion == "3":
+            # Nueva reunión
+            session["step"] = "esperar_servicio"
+            data["servicio"] = ""
+            data["descripcion"] = ""
+            await send_wa_message(sender,
+                f"¡Con mucho gusto! 📅\n\n"
+                f"¿Qué tipo de asesoría desea tratar en esta nueva reunión?\n\n"
+                f"{MENU_SERVICIOS}"
+            )
+            return
+        else:
+            await send_wa_message(sender,
+                "Por favor responda con *1*, *2* o *3*:\n\n"
+                "1️⃣ Nueva consulta\n"
+                "2️⃣ Seguimiento de un caso\n"
+                "3️⃣ Nueva reunión de consultoría"
+            )
+            return
+
     # ── esperar nombre ────────────────────────────────────────────────────────
     if step == "esperar_nombre":
-        data["nombre"] = text.strip()
+        nombre = text.strip()
+        if len(nombre) < 3:
+            await send_wa_message(sender,
+                "Por favor ingrese su nombre completo.\n"
+                "_Ejemplo: Juan Pérez García_"
+            )
+            return
+        data["nombre"] = nombre
+        data["telefono"] = sender
+        data["estado_conversacion"] = "conversacion_activa"
         session["step"] = "esperar_empresa"
         await send_wa_message(sender,
-            f"Mucho gusto, *{data['nombre']}* 😊\n\n"
+            f"Mucho gusto, *{nombre}* 😊\n\n"
             "¿Representa usted a alguna empresa u organización?\n"
             "_Si es a título personal, escriba *personal*._"
         )
@@ -580,11 +958,8 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
         data["empresa"] = "" if emp.lower() == "personal" else emp
         session["step"] = "esperar_servicio"
         await send_wa_message(sender,
-            "¿Qué servicio le interesa?\n\n"
-            "1️⃣ Consultoría empresarial\n"
-            "2️⃣ Gestión financiera\n"
-            "3️⃣ Asesoría en contrataciones y arbitraje\n\n"
-            "_Responda con el número (1, 2 o 3)_"
+            f"Para orientarle mejor, *{data['nombre']}*, indíquenos qué tipo de asesoría necesita:\n\n"
+            f"{MENU_SERVICIOS}"
         )
         return
 
@@ -593,53 +968,54 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
         opcion = text.strip()
         if opcion not in SERVICIOS:
             await send_wa_message(sender,
-                "Por favor responda con *1*, *2* o *3*:\n\n"
-                "1️⃣ Consultoría empresarial\n"
-                "2️⃣ Gestión financiera\n"
-                "3️⃣ Asesoría en contrataciones y arbitraje"
+                f"Por favor responda con *1*, *2*, *3* o *4*:\n\n{MENU_SERVICIOS}"
             )
             return
         data["servicio"] = SERVICIOS[opcion]
+        data["tipo_consulta"] = opcion
         session["step"] = "esperar_descripcion"
-        await send_wa_message(sender,
-            f"Excelente, *{data['servicio']}* ✅\n\n"
-            "Cuéntenos brevemente sobre su proyecto o necesidad:\n"
-            "_¿Cuál es la situación que desea resolver?_"
-        )
+        # Enviar descripción del servicio seleccionado
+        await send_wa_message(sender, SERVICIOS_DESC[opcion])
         return
 
     # ── esperar descripción ───────────────────────────────────────────────────
     if step == "esperar_descripcion":
         data["descripcion"] = text.strip()
         session["step"] = "esperar_reunion"
+        nombre = data.get("nombre", "")
         await send_wa_message(sender,
-            "Gracias por la información 🙏\n\n"
-            "¿Le gustaría agendar una *reunión con nuestro consultor* para evaluar su caso?\n\n"
-            "✅ *Sí* — Agendamos una reunión (S/ 100.00 soles)\n"
-            "📋 *No* — Solo deseo recibir una cotización\n\n"
-            "_Responda *sí* o *no*_"
+            f"Gracias por la información 🙏\n\n"
+            f"Para analizar su caso y brindarle una orientación clara, "
+            f"podemos programar una reunión de consultoría.\n\n"
+            f"📋 *Duración:* 30 minutos\n"
+            f"💰 *Costo de la sesión:* S/ 100.00\n\n"
+            f"¿Le gustaría agendar una *reunión con nuestro consultor*?\n\n"
+            f"1️⃣ Sí, deseo agendar una reunión\n"
+            f"2️⃣ Solo deseo dejar mi consulta\n\n"
+            f"_Responda *1* o *2*_"
         )
         return
 
     # ── esperar decisión reunión ──────────────────────────────────────────────
     if step == "esperar_reunion":
         resp = text.strip().lower()
-        if resp in ["no", "solo cotización", "solo cotizacion", "cotizacion", "cotización"]:
+        if resp in ["no", "2", "solo consulta", "solo cotización", "solo cotizacion", "cotizacion", "cotización"]:
+            data["estado_conversacion"] = "sin_reunion"
             await notificar_james_nuevo_cliente(sender, data, reunion=False, now=now)
             reset_session(sender)
+            nombre = data.get("nombre", "")
             await send_wa_message(sender,
-                f"Perfecto, *{data['nombre']}* 😊\n\n"
-                "Hemos registrado su consulta. Nuestro equipo le enviará una "
-                "*cotización personalizada* a la brevedad.\n\n"
+                f"Perfecto, *{nombre}* 😊\n\n"
+                "Hemos registrado su consulta. Nuestro equipo revisará su caso y se comunicará con usted a la brevedad.\n\n"
                 "📞 Si tiene alguna duda adicional, no dude en escribirnos.\n\n"
-                "*ASFIN Consultoría* — A su servicio 🏢"
+                "*ASFIN SAC* — A su servicio 🏢"
             )
             return
-        if resp in ["sí", "si", "s", "yes", "claro", "ok", "quiero", "deseo"]:
+        if resp in ["sí", "si", "s", "1", "yes", "claro", "ok", "quiero", "deseo"]:
             session["step"] = "esperar_dia"
             await send_wa_message(sender,
-                "¡Excelente! 📅\n\n"
-                "La reunión tiene un costo de *S/ 100.00 soles* (pago previo).\n\n"
+                "¡Perfecto! 📅\n\n"
+                "La reunión tiene un costo de *S/ 100.00 soles* (pago previo vía Yape o Plin).\n\n"
                 "¿Qué día le resultaría conveniente?\n"
                 "_Indíquenos un día. Ejemplos: *lunes*, *viernes 20*, *20 de marzo*_\n\n"
                 "📌 Horarios de atención:\n"
@@ -649,7 +1025,9 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
             )
             return
         await send_wa_message(sender,
-            "Por favor responda *sí* para agendar reunión o *no* para solo recibir cotización."
+            "Por favor responda:\n\n"
+            "1️⃣ Sí, deseo agendar una reunión\n"
+            "2️⃣ Solo deseo dejar mi consulta"
         )
         return
 
@@ -714,7 +1092,6 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
             # Verificar si el cliente pide un horario específico distinto
             hora_match = re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", opcion, re.IGNORECASE)
             if hora_match and num_slots > 0:
-                # Guardar solicitud especial y notificar a James
                 data["horario_especial"] = opcion
                 session["step"] = "esperando_aprobacion_horario"
                 codigo = sender[-4:]
@@ -781,7 +1158,6 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
                 f"✅ Para confirmar responde:\n"
                 f"*confirmar {codigo}*"
             )
-            PENDING_CONFIRM[codigo] = {**data, "sender": sender}
             try:
                 await forward_image_to_james(media_id, caption)
             except Exception as e:
@@ -826,12 +1202,12 @@ async def notificar_james_nuevo_cliente(sender: str, data: dict, reunion: bool, 
     dia      = data.get("dia_str", "")
     horario  = data.get("horario_label", "")
     fecha    = now.strftime("%d/%m/%Y %H:%M")
-    tipo     = "REUNIÓN + COTIZACIÓN" if reunion else "SOLO COTIZACIÓN"
+    tipo     = "REUNIÓN + COTIZACIÓN" if reunion else "SOLO CONSULTA"
 
     subject = f"🔔 ASFIN — Nuevo cliente: {nombre} ({tipo})"
     html = f"""
     <html><body style="font-family:Arial,sans-serif;max-width:600px;margin:auto">
-    <h2 style="color:#2c5282">🔔 Nuevo cliente — ASFIN Consultoría</h2>
+    <h2 style="color:#2c5282">🔔 Nuevo cliente — ASFIN SAC</h2>
     <table style="border-collapse:collapse;width:100%">
       <tr><td style="padding:8px;background:#ebf8ff;font-weight:bold">Nombre</td><td style="padding:8px">{nombre}</td></tr>
       <tr><td style="padding:8px;background:#ebf8ff;font-weight:bold">Empresa</td><td style="padding:8px">{empresa}</td></tr>
@@ -842,7 +1218,7 @@ async def notificar_james_nuevo_cliente(sender: str, data: dict, reunion: bool, 
       {'<tr><td style="padding:8px;background:#ebf8ff;font-weight:bold">Reunión</td><td style="padding:8px">' + dia + ' ' + horario + '</td></tr>' if reunion else ''}
       <tr><td style="padding:8px;background:#ebf8ff;font-weight:bold">Fecha contacto</td><td style="padding:8px">{fecha}</td></tr>
     </table>
-    {'<p><b>Para confirmar: responde <code>confirmar ' + sender[-4:] + '</code> en WhatsApp</b></p>' if reunion else '<p>Prepara la cotización y responde al cliente.</p>'}
+    {'<p><b>Para confirmar: responde <code>confirmar ' + sender[-4:] + '</code> en WhatsApp</b></p>' if reunion else '<p>Revisa la consulta y responde al cliente.</p>'}
     </body></html>
     """
     await send_email_to_james(subject, html)
@@ -913,6 +1289,10 @@ async def process_james_command(sender: str, text: str) -> str:
     if any(w in text_lower for w in ["hoja", "sheet", "link", "url", "enlace"]):
         return f"📊 Hoja de Control:\nhttps://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
 
+    # CRM CLIENTES
+    if any(w in text_lower for w in ["clientes", "sesiones", "asfin"]):
+        return cmd_resumen_crm()
+
     # AYUDA
     if any(w in text_lower for w in ["ayuda", "help", "comandos", "qué puedes", "que puedes"]):
         return cmd_ayuda()
@@ -950,8 +1330,12 @@ async def cmd_confirmar_reunion(codigo: str, now_lima: datetime) -> str:
         except Exception as e:
             log.error(f"create_calendar_event error: {e}", exc_info=True)
 
+    # Actualizar CRM del cliente
     if sender in CLIENT_SESSIONS:
         CLIENT_SESSIONS[sender]["step"] = "completado"
+        CLIENT_SESSIONS[sender]["data"]["estado_conversacion"] = "reunion_agendada"
+        CLIENT_SESSIONS[sender]["data"]["reunion_agendada"] = True
+        CLIENT_SESSIONS[sender]["data"]["fecha_reunion"] = f"{dia} {horario}"
 
     # Mensaje al cliente con Meet link
     meet_txt = f"\n\n🎥 *Enlace Google Meet:*\n{meet_link}" if meet_link else ""
@@ -968,7 +1352,7 @@ async def cmd_confirmar_reunion(codigo: str, now_lima: datetime) -> str:
             f"{meet_txt}"
             f"{cal_txt}\n\n"
             f"Le esperamos. ¡Hasta pronto! 🏢\n"
-            f"*ASFIN Consultoría*"
+            f"*ASFIN SAC*"
         )
     except Exception as e:
         return f"Hola James ❌ Error enviando confirmación al cliente: {str(e)[:80]}"
@@ -1005,8 +1389,7 @@ async def cmd_gestionar_horario_especial(accion: str, codigo: str, now_lima: dat
         )
         return f"Hola James ℹ️ Horario especial rechazado. El cliente debe elegir de los disponibles."
 
-    # Aprobar: continuar con ese horario como si fuera normal
-    # Parseamos la hora especial
+    # Aprobar
     hora_match = re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", horario_esp, re.IGNORECASE)
     hora = 9  # default
     if hora_match:
@@ -1021,11 +1404,10 @@ async def cmd_gestionar_horario_especial(accion: str, codigo: str, now_lima: dat
     if target_date.tzinfo is None:
         target_date = target_date.replace(tzinfo=LIMA_TZ)
     slot_start = target_date.replace(hour=hora, minute=0, second=0, microsecond=0)
-    slot_end   = slot_start + timedelta(hours=1)
+    slot_end   = slot_start + timedelta(minutes=30)
     label      = slot_start.strftime("%-I:%M %p")
 
     PENDING_CONFIRM.pop(codigo)
-    # Crear nuevo código para confirmación de pago
     new_code = sender[-4:]
     client_data["horario_label"] = label
     client_data["slot_start"]    = slot_start.isoformat()
@@ -1170,6 +1552,18 @@ async def cmd_crear_tarea(text: str, now_lima: datetime) -> str:
     except Exception as e:
         return f"Hola James ❌ Error: {str(e)[:100]}"
 
+def cmd_resumen_crm() -> str:
+    total = len(CLIENT_SESSIONS)
+    if total == 0:
+        return "Hola James ℹ️ No hay sesiones activas de clientes ASFIN."
+    lines = [f"Hola James 👥 CLIENTES ASFIN ({total} sesiones)\n"]
+    for phone, session in list(CLIENT_SESSIONS.items())[-10:]:
+        nombre = session.get("data", {}).get("nombre", "?")
+        step = session.get("step", "?")
+        estado = session.get("data", {}).get("estado_conversacion", "?")
+        lines.append(f"📱 +{phone}: {nombre} | {step} | {estado}")
+    return "\n".join(lines)
+
 def cmd_ayuda() -> str:
     return (
         "Hola James 📖 COMANDOS\n\n"
@@ -1180,6 +1574,7 @@ def cmd_ayuda() -> str:
         "✅ *resolver N°5* — Marcar N°5 Resuelto\n"
         "➕ *agenda [asunto]* — Nueva tarea\n"
         "🔗 *hoja* — Link a la hoja\n"
+        "👥 *clientes* — Sesiones activas ASFIN\n"
         "✅ *confirmar XXXX* — Confirmar pago y crear reunión\n"
         "⏰ *aprobar hora_XXXX* — Aprobar horario especial\n"
         "❌ *rechazar hora_XXXX* — Rechazar horario especial\n\n"
@@ -1254,7 +1649,7 @@ async def handle_client_message(sender: str, msg_type: str, text: str, media_id:
         log.error(f"handle_client {sender}: {e}", exc_info=True)
         try:
             await send_wa_message(sender,
-                "Lo sentimos, ocurrió un error. Por favor intente nuevamente.\n🏢 *ASFIN Consultoría*")
+                "Lo sentimos, ocurrió un error. Por favor intente nuevamente.\n🏢 *ASFIN SAC*")
         except Exception:
             pass
 
@@ -1264,19 +1659,82 @@ async def health():
     service = get_calendar_service()
     return {
         "status": "ok",
-        "server": "WA Webhook — Control Correos James + ASFIN v2",
+        "server": "ASFIN v4 — CRM + 4 servicios + estados cliente",
         "time_lima": datetime.now(LIMA_TZ).strftime("%Y-%m-%d %H:%M:%S"),
         "calendar_connected": service is not None,
         "active_sessions": len(CLIENT_SESSIONS),
         "pending_confirmations": len(PENDING_CONFIRM),
+        "crm_states": {
+            "nuevo": sum(1 for s in CLIENT_SESSIONS.values() if s.get("data",{}).get("estado_conversacion") == "nuevo"),
+            "activo": sum(1 for s in CLIENT_SESSIONS.values() if s.get("data",{}).get("estado_conversacion") == "conversacion_activa"),
+            "reunion_agendada": sum(1 for s in CLIENT_SESSIONS.values() if s.get("data",{}).get("reunion_agendada")),
+            "reunion_realizada": sum(1 for s in CLIENT_SESSIONS.values() if s.get("data",{}).get("reunion_realizada")),
+        }
     }
+
+@app.get("/debug-calendar")
+async def debug_calendar():
+    """Diagnóstico del estado de Google Calendar (solo para testing)."""
+    import traceback
+    key_raw = os.getenv("GCAL_PRIVATE_KEY", "")
+    key_parsed = key_raw.replace("\\n", "\n")
+    info = {
+        "gcal_available": GCAL_AVAILABLE,
+        "client_email": GCAL_CLIENT_EMAIL,
+        "key_raw_length": len(key_raw),
+        "key_parsed_length": len(key_parsed),
+        "key_starts_with": key_parsed[:40] if key_parsed else "(empty)",
+        "key_ends_with": key_parsed[-40:] if key_parsed else "(empty)",
+        "key_has_begin": "-----BEGIN RSA PRIVATE KEY-----" in key_parsed or "-----BEGIN PRIVATE KEY-----" in key_parsed,
+        "key_has_end": "-----END RSA PRIVATE KEY-----" in key_parsed or "-----END PRIVATE KEY-----" in key_parsed,
+        "newlines_in_parsed": key_parsed.count("\n"),
+        "calendar_service_result": None,
+        "error": None,
+    }
+    try:
+        svc = get_calendar_service()
+        info["calendar_service_result"] = "OK" if svc else "None (check logs)"
+    except Exception as e:
+        info["error"] = traceback.format_exc()
+    return info
+
+
+@app.get("/crm")
+async def crm_status():
+    """Vista del CRM en memoria (solo para testing/diagnóstico)."""
+    sessions_summary = {}
+    for phone, session in CLIENT_SESSIONS.items():
+        d = session.get("data", {})
+        sessions_summary[f"+{phone}"] = {
+            "step": session.get("step"),
+            "nombre": d.get("nombre", ""),
+            "empresa": d.get("empresa", ""),
+            "servicio": d.get("servicio", ""),
+            "estado_conversacion": d.get("estado_conversacion", "nuevo"),
+            "reunion_agendada": d.get("reunion_agendada", False),
+            "reunion_realizada": d.get("reunion_realizada", False),
+            "fecha_reunion": d.get("fecha_reunion", ""),
+        }
+    return {
+        "total_sessions": len(CLIENT_SESSIONS),
+        "pending_confirmations": len(PENDING_CONFIRM),
+        "sessions": sessions_summary,
+    }
+
 
 @app.get("/")
 async def root():
     return {
-        "name": "WhatsApp Webhook — James + ASFIN v2",
+        "name": "WhatsApp Webhook — James + ASFIN v4",
         "status": "running",
-        "features": ["gestión_correos", "captación_clientes", "google_calendar", "google_meet"],
+        "features": [
+            "gestión_correos",
+            "captación_clientes",
+            "crm_5_estados",
+            "4_servicios",
+            "google_calendar",
+            "google_meet"
+        ],
     }
 
 if __name__ == "__main__":
