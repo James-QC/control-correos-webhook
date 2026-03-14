@@ -109,7 +109,7 @@ SERVICIOS_DESC = {
         "• Implementación de sistemas de control interno\n"
         "• Diseño de estructura administrativa y financiera\n"
         "• Implementación de ERP para gestión empresarial\n\n"
-        "Cuéntenos brevemente su situación o el problema que desea resolver."
+        "*Cuéntenos brevemente su situación o el problema que desea resolver.*"
     ),
     "2": (
         "⚖️ *CONTRATACIONES PÚBLICAS Y CONTROVERSIAS DE OBRA*\n\n"
@@ -122,7 +122,7 @@ SERVICIOS_DESC = {
         "• Resolución de contrato\n"
         "• Controversias contractuales\n"
         "• Procesos arbitrales y Juntas de Resolución de Disputas\n\n"
-        "Cuéntenos brevemente su caso o la situación que desea resolver."
+        "*Cuéntenos brevemente su caso o la situación que desea resolver.*"
     ),
     "3": (
         "💰 *GESTIÓN FINANCIERA Y CONTROL EMPRESARIAL*\n\n"
@@ -133,7 +133,7 @@ SERVICIOS_DESC = {
         "• Financiamiento de proyectos\n"
         "• Estructuración financiera empresarial\n"
         "• Diseño de sistemas de control financiero\n\n"
-        "Cuéntenos brevemente su situación o el problema que desea resolver."
+        "*Cuéntenos brevemente su situación o el problema que desea resolver.*"
     ),
     "4": (
         "⚙️ *SISTEMAS DE CONTROL Y TRANSFORMACIÓN DIGITAL*\n\n"
@@ -144,7 +144,7 @@ SERVICIOS_DESC = {
         "• Herramientas de gestión de proyectos\n"
         "• Automatización de procesos empresariales\n"
         "• Aplicación de inteligencia artificial en gestión empresarial\n\n"
-        "Cuéntenos brevemente su proyecto o la necesidad que desea resolver."
+        "*Cuéntenos brevemente su proyecto o la necesidad que desea resolver.*"
     ),
 }
 
@@ -153,7 +153,7 @@ MENU_SERVICIOS = (
     "2️⃣ Contrataciones públicas y controversias de obra\n"
     "3️⃣ Gestión financiera y control empresarial\n"
     "4️⃣ Sistemas de control, ERP y transformación digital\n\n"
-    "Responda con el número de la opción que mejor describa su consulta (1, 2, 3 o 4)."
+    "*Responda con el número de la opción que mejor describa su consulta (1, 2, 3 o 4).*"
 )
 
 # ─── Google Calendar helpers ──────────────────────────────────────────────────
@@ -729,7 +729,7 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
                 "• Gestión financiera de proyectos\n"
                 "• Sistemas de control y transformación digital\n\n"
                 "Para poder atenderle mejor,\n\n"
-                "¿Cuál es su nombre completo?"
+                "*¿Cuál es su nombre completo?*"
             )
             return
 
@@ -829,8 +829,7 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
                 f"_Indíquenos un día. Ejemplos: *lunes*, *viernes 20*, *20 de marzo*_\n\n"
                 f"📌 Horarios de atención:\n"
                 f"• Lunes a viernes: 8:00 AM – 1:00 PM y 4:00 PM – 8:00 PM\n"
-                f"• Sábados: 8:00 AM – 6:00 PM\n"
-                f"• Domingos y viernes desde 6:00 PM: no disponible"
+                f"• Sabados y viernes desde 6:00 PM: no disponible"
             )
             return
         else:
@@ -944,25 +943,6 @@ async def handle_asfin(sender: str, msg_type: str, text: str, media_id: str = ""
         data["nombre"] = nombre
         data["telefono"] = sender
         data["estado_conversacion"] = "conversacion_activa"
-        session["step"] = "esperar_empresa"
-        await send_wa_message(sender,
-            f"Mucho gusto, *{nombre}* 😊\n\n"
-            "¿Representa usted a alguna empresa u organización?\n"
-            "_Si es a título personal, escriba *personal*._"
-        )
-        return
-
-    # ── esperar empresa ───────────────────────────────────────────────────────
-    if step == "esperar_empresa":
-        emp = text.strip()
-        data["empresa"] = "" if emp.lower() == "personal" else emp
-        session["step"] = "esperar_servicio"
-        await send_wa_message(sender,
-            f"Para orientarle mejor, *{data['nombre']}*, indíquenos qué tipo de asesoría necesita:\n\n"
-            f"{MENU_SERVICIOS}"
-        )
-        return
-
     # ── esperar servicio ──────────────────────────────────────────────────────
     if step == "esperar_servicio":
         opcion = text.strip()
